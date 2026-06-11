@@ -1,14 +1,15 @@
-FROM node:20-alpine
+FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm install
+RUN pip install --no-cache-dir --no-deps --upgrade pip && \
+    pip install --no-cache-dir \
+    fastapi uvicorn asyncpg python-dotenv \
+    langchain langchain-groq langchain-community \
+    langchain-huggingface langchain-text-splitters \
+    pypdf sentence-transformers \
+    python-multipart
 
 COPY . .
 
-RUN npm run build
-
-RUN npm install -g serve
-
-CMD ["serve", "-s", "dist", "-l", "5173"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

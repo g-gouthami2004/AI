@@ -1,5 +1,10 @@
 import os
+import shutil
+import asyncpg  
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -10,51 +15,117 @@ from langchain.agents import create_agent
 
 load_dotenv()
 
-model = ChatGroq(model="qwen/qwen3-32b", reasoning_format="parsed")
+app = FastAPI()
 
-print("Loading the PDF document..")
-loader = PyPDFLoader("AGL_V_WesternBlaze.pdf")
-docs = loader.load()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-all_splits = text_splitter.split_documents(docs)
+MODEL = ChatGroq(model="qwen/qwen3-32b", reasoning_format="parsed")
+EMBEDDINGS = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+                   
+DB_DSN = "postgresql://postgres:Admin@postgres:5432/postgres"
+VECTOR_STORE = None
+AGENT = None
 
-print("Building embeddings...")
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-vector_store = InMemoryVectorStore.from_documents(all_splits, embeddings)
+UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "documents")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-@tool
-def retrieve_context(query: str)->str:
-    """Retrieves relevant context from the PDF document based on the query."""
-    similar_docs = vector_store.similarity_search(query, k=3)
-    data = []
-    for doc in similar_docs:
-        content = doc.page_content
-        source = doc.metadata.get("source", "unknown")
-        data.append(f"Content: {content}\nSource: {source}")
-    return "\n\n".join(data)
-
-tools = [retrieve_context]
-client = "You are an agent who retrieves context from PDF docs."
-agent = create_agent(model, tools, system_prompt=client)
-
-chat_history = []
-
-print("Welcome to RAG chatbot.Enter your query below.")
-while True:
-    query=input("\nYou : ").strip()
-    if query.lower() in ["exit", "quit", "bye","goodbye"]:
-        print("AI : Good Bye!")
-        break
-    if not query:
-        continue
-
-    chat_history.append({"role": "user", "content": query})
+@app.post("/upload")
+async def upload_pdf(file: UploadFile = File(...)):
+    global VECTOR_STORE, AGENT
     
-    response = agent.invoke({"messages": chat_history})
+    if not file.filename.endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-    ai_message = response["messages"][-1]
-    ai_message.pretty_print()
+    try:
+        loader = PyPDFLoader(file_path)
+        docs = loader.load()
+        
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        all_splits = text_splitter.split_documents(docs)
+        
+        VECTOR_STORE = InMemoryVectorStore.from_documents(all_splits, EMBEDDINGS)
+        
+        @tool
+        def retrieve_context(query: str) -> str:
+            """Retrieves relevant context from the PDF document based on the query."""
+            similar_docs = VECTOR_STORE.similarity_search(query, k=3)
+            data = []
+            for doc in similar_docs:
+                content = doc.page_content
+                source = doc.metadata.get("source", "unknown")
+                data.append(f"Content: {content}\nSource: {source}")
+            return "\n\n".join(data)
+        
+        tools = [retrieve_context]
+        client_prompt = "You are an agent who retrieves context from PDF docs."
+        AGENT = create_agent(MODEL, tools, system_prompt=client_prompt)
+        
+        return {"status": "success", "message": f"Successfully parsed and indexed: {file.filename}"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
-    chat_history.append({"role": "assistant", "content": ai_message.content}) 
-  
+@app.post("/chat")
+async def chat(
+    message: str = Form(...),
+    user_id: str = Form(...),      
+    session_id: str = Form(...)    
+):
+    global AGENT
+    if not AGENT:
+        raise HTTPException(status_code=400, detail="No active document matrix found. Upload a file on the sidebar.")
+        
+    conn = await asyncpg.connect(DB_DSN)
+    
+    try:
+        await conn.execute(
+            """
+            INSERT INTO chat_sessions (session_id, user_id) 
+            VALUES ($1, $2) 
+            ON CONFLICT (session_id) DO NOTHING
+            """,
+            session_id, user_id
+        )
+        
+        await conn.execute(
+            "INSERT INTO chat_messages (session_id, sender, message_text) VALUES ($1, $2, $3)",
+            session_id, "user", message
+        )
+        
+        rows = await conn.fetch(
+            "SELECT sender, message_text FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC",
+            session_id
+        )
+        
+        formatted_history = []
+        for r in rows:
+            role = "user" if r["sender"] == "user" else "assistant"
+            formatted_history.append({"role": role, "content": r["message_text"]})
+            
+        response = AGENT.invoke({"messages": formatted_history})
+        ai_message = response["messages"][-1].content
+        
+        await conn.execute(
+            "INSERT INTO chat_messages (session_id, sender, message_text) VALUES ($1, $2, $3)",
+            session_id, "ai", ai_message
+        )
+        
+        return {"response": ai_message}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await conn.close()

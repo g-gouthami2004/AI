@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatbot</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { display: flex; height: 100vh; background-color: #f1f5f9; color: #1e293b; }
+        
+        .sidebar { width: 320px; background-color: #a8bfec; color: #0b0909; padding: 24px; display: flex; flex-direction: column; gap: 24px; border-right: 1px solid #334155; }
+        .sidebar h2 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.025em; }
+        .upload-box { display: flex; flex-direction: column; gap: 12px; }
+        input[type="file"] { color: #040b16; font-size: 0.9rem; }
+        
+        .btn { padding: 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.95rem; width: 100%; transition: background-color 0.2s; display: flex; align-items: center; justify-content: center; gap: 8px; }
+        .btn-primary { background-color: #1d4ed8; color: #0d0c0c; }
+        .btn-primary:hover:not(:disabled) { background-color: #1d4ed8; }
+        .btn-danger { background-color: #1d4ed8; color: #0e0c0c; margin-top: auto; }
+        .btn-danger:hover { background-color: #dc2626; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .status-badge { font-size: 0.85rem; padding: 10px; border-radius: 6px; display: none; line-height: 1.4; }
+        
+        .main-workspace { flex: 1; display: flex; flex-direction: column; height: 100vh; background-color: #ca7171; }
+        .header { padding: 20px 32px; border-bottom: 1px solid #f8f8fa; font-size: 1.5rem; font-weight: 700; background-color: #ffffff; }
+        .chat-feed { flex: 1; padding: 32px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; background-color: #f8fafc; }
+        
+        .msg { max-width: 75%; padding: 14px 18px; border-radius: 12px; line-height: 1.5; font-size: 1rem; word-wrap: break-word; }
+        .msg.user { background-color: #f7f8fa; color: #0f0b0b; align-self: flex-end; border-bottom-right-radius: 2px; box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.2); }
+        .msg.assistant { background-color: #fcfafa; color: #3a3535; align-self: flex-start; border-bottom-left-radius: 2px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05); }
+
+        .footer-input-bar { padding: 24px 32px; background: #f7f5f5; border-top: 1px solid #ebedf0; display: flex; gap: 16px; }
+        .footer-input-bar input { flex: 1; padding: 14px 16px; border: 1px solid #0f1011; border-radius: 8px; outline: none; font-size: 1rem; transition: border-color 0.15s; }
+        .footer-input-bar input:focus { border-color: #2563eb; }
+        .footer-input-bar button { width: 120px; }
+
+        
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <h2>Upload Document</h2>
+        <form id="uploadForm" class="upload-box">
+            <input type="file" id="fileField" accept=".pdf" required>
+            <button type="submit" id="uploadBtn" class="btn btn-primary">Upload PDF</button>
+        </form>
+        <div id="statusOutput" class="status-badge"></div>
+
+        <button id="clearBtn" class="btn btn-danger">Clear</button>
+    </div>
+
+    <div class="main-workspace">
+        <div class="header">CHAT HERE</div>
+        <div class="chat-feed" id="chatFeed">
+        </div>
+        <div class="footer-input-bar">
+            <input type="text" id="userPrompt" placeholder="Type Here..." autocomplete="off">
+            <button id="submitPromptBtn" class="btn btn-primary">Send</button>
+        </div>
+    </div>
+
+    <script>
+        const BACKEND_URL = "http://127.0.0.1:8000";
+
+        const chatFeed = document.getElementById('chatFeed');
+        const userPrompt = document.getElementById('userPrompt');
+        const submitPromptBtn = document.getElementById('submitPromptBtn');
+        const uploadForm = document.getElementById('uploadForm');
+        const fileField = document.getElementById('fileField');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const statusOutput = document.getElementById('statusOutput');
+        const clearBtn = document.getElementById('clearBtn');
+
+        function autoScroll() {
+            chatFeed.scrollTop = chatFeed.scrollHeight;
+        }
+
+        function pushMessage(role, message) {
+            const msgNode = document.createElement('div');
+            msgNode.classList.add('msg', role);
+            msgNode.innerText = message;
+            chatFeed.appendChild(msgNode);
+            autoScroll();
+        }
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if(!fileField.files[0]) return;
+
+            const payload = new FormData();
+            payload.append("file", fileField.files[0]);
+
+            statusOutput.style.display = "block";
+            statusOutput.style.backgroundColor = " #f7f5f5";
+            statusOutput.style.color = "#d97706";
+            statusOutput.innerText = "Parsing documents...";
+            uploadBtn.disabled = true;
+
+            try {
+                const response = await fetch(`${BACKEND_URL}/upload`, {
+                    method: "POST",
+                    body: payload
+                });
+                const data = await response.json();
+                
+                if(response.ok) {
+                    statusOutput.style.backgroundColor = "#f7f5f5";
+                    statusOutput.style.color = "#0f1011";
+                    statusOutput.innerText = data.message;
+                } else {
+                    throw new Error(data.detail || "Upload error context exception.");
+                }
+            } catch (err) {
+                statusOutput.style.backgroundColor = "#fee2e2";
+                statusOutput.style.color = "#0f1011";
+                statusOutput.innerText = err.message;
+            } finally {
+                uploadBtn.disabled = false;
+            }
+        });
+
+        async function runPromptPipeline() {
+            const query = userPrompt.value.trim();
+            if(!query) return;
+
+            pushMessage('user', query);
+            userPrompt.value = '';
+
+            const loadingBubble = document.createElement('div');
+            loadingBubble.classList.add('msg', 'assistant');
+            loadingBubble.style.display = "flex";
+            loadingBubble.style.alignItems = "center";
+            loadingBubble.style.gap = "12px";
+            loadingBubble.innerHTML = `<div class="loader-dots" style="border-top-color: #2563eb"></div><span style="color: #64748b">Thinking...</span>`;
+            chatFeed.appendChild(loadingBubble);
+            autoScroll();
+
+            const payload = new FormData();
+            payload.append("message", query);
+
+            try {
+                const response = await fetch(`${BACKEND_URL}/chat`, {
+                    method: "POST",
+                    body: payload
+                });
+                const data = await response.json();
+                
+                chatFeed.removeChild(loadingBubble);
+                if(response.ok) {
+                    pushMessage('assistant', data.response);
+                } else {
+                    pushMessage('assistant', `Error: ${data.detail || "An execution error occurred."}`);
+                }
+            } catch (err) {
+                if(chatFeed.contains(loadingBubble)) chatFeed.removeChild(loadingBubble);
+                pushMessage('assistant', "Fatal: Critical interface integration error or server down.");
+            }
+        }
+
+        submitPromptBtn.addEventListener('click', runPromptPipeline);
+        userPrompt.addEventListener('keypress', (e) => { if(e.key === 'Enter') runPromptPipeline(); });
+
+        clearBtn.addEventListener('click', async () => {
+            if(!confirm("Reset current message loops records?")) return;
+            try {
+                const response = await fetch(`${BACKEND_URL}/clear`, { method: "POST" });
+                if(response.ok) {
+                    chatFeed.innerHTML = `<div class="msg system">Conversation history cleared.</div>`;
+                }
+            } catch(e) {
+                console.error("Failed to clear conversational state records properly.", e);
+            }
+        });
+    </script>
+</body>
+</html>

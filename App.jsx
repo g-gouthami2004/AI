@@ -17,7 +17,6 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   
-  // ✅ Fixed: Added back the missing status state to prevent handler crashes
   const [status, setStatus] = useState({ state: "idle", text: "Ready" });
 
   const fileInputRef = useRef(null);
